@@ -304,138 +304,478 @@ tab1, tab2, tab3 = st.tabs(
 )
 
 # ------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # TAB 1: ALL-IN-ONE MULTI-VARIABLE VISUALIZATIONS
 # ------------------------------------------------------------------------------
 with tab1:
-    st.subheader(
-        "1. Parallel Coordinates Plot (Visualizing All 7 Drivers Simultaneously)"
-    )
+
+    st.subheader("1. Animated Restaurant Order Flow")
     st.caption(
-        "Trace individual order paths across Day, Hour, Order Type, Items, Modifiers, Volume, Staff, and Processing Time."
+        "Each dot represents an individual order. "
+        "Watch orders move from Received to Completed as restaurant time progresses."
     )
 
-    p_df = filtered_df.copy()
-    # Map categorical variables to numeric codes for Parallel Coordinates
-    p_df["day_code"] = p_df["day_of_week"].map(
-        {d: i for i, d in enumerate(days_order)}
-    )
-    p_df["type_code"] = p_df["orderType.label"].astype("category").cat.codes
+    # --------------------------------------------------------------------------
+    # PREPARE DATA FOR ANIMATION
+    # --------------------------------------------------------------------------
 
-    fig_parcoord = go.Figure(
-        data=go.Parcoords(
-            line=dict(
-                color=p_df["processing_time_min"],
-                colorscale="Viridis",
-                showscale=True,
-                colorbar=dict(title="Processing (min)"),
-            ),
-            dimensions=[
-                dict(
-                    range=[0, 6],
-                    tickvals=list(range(7)),
-                    ticktext=[d[:3] for d in days_order],
-                    label="Day of Week",
-                    values=p_df["day_code"],
-                ),
-                dict(
-                    range=[0, 23],
-                    label="Hour of Day",
-                    values=p_df["hour"],
-                ),
-                dict(
-                    range=[0, p_df["type_code"].max() or 1],
-                    label="Order Type",
-                    values=p_df["type_code"],
-                ),
-                dict(
-                    range=[0, p_df["num_items"].max() or 1],
-                    label="Num Items",
-                    values=p_df["num_items"],
-                ),
-                dict(
-                    range=[0, p_df["num_modifiers"].max() or 1],
-                    label="Num Modifiers",
-                    values=p_df["num_modifiers"],
-                ),
-                dict(
-                    range=[
-                        p_df["order_volume"].min(),
-                        p_df["order_volume"].max(),
-                    ],
-                    label="Order Volume",
-                    values=p_df["order_volume"],
-                ),
-                dict(
-                    range=[
-                        p_df["employee_count"].min(),
-                        p_df["employee_count"].max(),
-                    ],
-                    label="Employee Count",
-                    values=p_df["employee_count"],
-                ),
-                dict(
-                    range=[
-                        p_df["processing_time_min"].min(),
-                        p_df["processing_time_min"].max(),
-                    ],
-                    label="Processing Time (min)",
-                    values=p_df["processing_time_min"],
-                ),
-            ],
-        )
-    )
-    fig_parcoord.update_layout(height=450, margin=dict(l=60, r=60, t=50, b=40))
-    st.plotly_chart(fig_parcoord, use_container_width=True)
+    anim_df = filtered_df.copy()
 
-    st.subheader("2. Interactive 5D Bubble Scatter Plot")
-    st.caption(
-        "Examine 5 dimensions at once: X-axis, Y-axis, Color, Size, and Facet Grid."
+    # Make sure timestamps are datetime
+    anim_df["createdTime"] = pd.to_datetime(anim_df["createdTime"])
+    anim_df["modifiedTime"] = pd.to_datetime(anim_df["modifiedTime"])
+
+    # Keep only valid processing times
+    anim_df = anim_df[
+        (anim_df["processing_time_min"] >= 0)
+        & (anim_df["processing_time_min"] <= 120)
+    ].copy()
+
+    # Animation time:
+    # Use 5-minute intervals to avoid creating hundreds of frames
+    anim_df["created_minute"] = (
+        anim_df["createdTime"]
+        .dt.floor("5min")
     )
 
-    col_x, col_y, col_color, col_size, col_facet = st.columns(5)
-    axis_opts = [
-        "employee_count",
-        "order_volume",
-        "num_items",
-        "num_modifiers",
-        "hour",
-        "processing_time_min",
+    anim_df["completed_minute"] = (
+        anim_df["modifiedTime"]
+        .dt.ceil("5min")
+    )
+
+    # --------------------------------------------------------------------------
+    # CREATE ORDER TYPE SYMBOLS
+    # --------------------------------------------------------------------------
+
+    order_type_list = (
+        anim_df["orderType.label"]
+        .astype(str)
+        .unique()
+        .tolist()
+    )
+
+    symbol_list = [
+        "circle",
+        "diamond",
+        "square",
+        "triangle-up",
+        "triangle-down",
+        "star",
+        "hexagon",
+        "cross",
     ]
 
-    x_axis = col_x.selectbox("X-Axis", axis_opts, index=0)
-    y_axis = col_y.selectbox("Y-Axis", axis_opts, index=5)
-    color_axis = col_color.selectbox(
-        "Color Code", ["orderType.label", "day_of_week"] + axis_opts, index=0
-    )
-    size_axis = col_size.selectbox(
-        "Bubble Size", ["num_items", "num_modifiers", "order_volume"], index=0
-    )
-    facet_axis = col_facet.selectbox(
-        "Facet Split", ["None", "day_of_week", "orderType.label"], index=0
-    )
-
-    scatter_kwargs = {
-        "data_frame": filtered_df,
-        "x": x_axis,
-        "y": y_axis,
-        "color": color_axis,
-        "size": size_axis,
-        "hover_data": [
-            "createdTime",
-            "employee.name_x",
-            "num_items",
-            "num_modifiers",
-            "processing_time_min",
-        ],
-        "opacity": 0.7,
+    symbol_map = {
+        order_type_list[i]: symbol_list[i % len(symbol_list)]
+        for i in range(len(order_type_list))
     }
-    if facet_axis != "None":
-        scatter_kwargs["facet_col"] = facet_axis
 
-    fig_scatter = px.scatter(**scatter_kwargs)
-    fig_scatter.update_layout(height=500)
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    anim_df["symbol"] = (
+        anim_df["orderType.label"]
+        .astype(str)
+        .map(symbol_map)
+    )
 
+    # --------------------------------------------------------------------------
+    # CREATE UNIQUE ORDER IDENTIFIER
+    # --------------------------------------------------------------------------
+
+    anim_df["order_id"] = anim_df["id_x"].astype(str)
+
+    # --------------------------------------------------------------------------
+    # CREATE TIME RANGE FOR ANIMATION
+    # --------------------------------------------------------------------------
+
+    min_time = anim_df["created_minute"].min()
+    max_time = anim_df["completed_minute"].max()
+
+    animation_times = pd.date_range(
+        start=min_time,
+        end=max_time,
+        freq="5min"
+    )
+
+    # Limit the number of frames if dataset is extremely large
+    max_frames = 250
+
+    if len(animation_times) > max_frames:
+
+        step = int(np.ceil(len(animation_times) / max_frames))
+
+        animation_times = animation_times[::step]
+
+    # --------------------------------------------------------------------------
+    # INITIAL FRAME
+    # --------------------------------------------------------------------------
+
+    first_time = animation_times[0]
+
+    active_first = anim_df[
+        (anim_df["createdTime"] <= first_time)
+        & (anim_df["modifiedTime"] >= first_time)
+    ].copy()
+
+    # Position inside processing flow:
+    #
+    # 0 = Received
+    # 1 = In Process
+    # 2 = Completed
+    #
+    # We use continuous x-position so the dots actually MOVE.
+
+    def calculate_stage_position(data, current_time):
+
+        elapsed = (
+            current_time - data["createdTime"]
+        ).dt.total_seconds()
+
+        total = (
+            data["modifiedTime"] - data["createdTime"]
+        ).dt.total_seconds()
+
+        progress = np.where(
+            total > 0,
+            elapsed / total,
+            1
+        )
+
+        progress = np.clip(progress, 0, 1)
+
+        return progress * 2
+
+
+    active_first["stage_position"] = calculate_stage_position(
+        active_first,
+        first_time
+    )
+
+    # --------------------------------------------------------------------------
+    # INITIAL PLOT
+    # --------------------------------------------------------------------------
+
+    fig_flow = go.Figure()
+
+    fig_flow.add_trace(
+        go.Scatter(
+            x=active_first["stage_position"],
+            y=active_first["processing_time_min"],
+            mode="markers",
+
+            marker=dict(
+                size=np.maximum(
+                    active_first["num_items"].fillna(1) * 6,
+                    8
+                ),
+                color=active_first["processing_time_min"],
+                colorscale="Viridis",
+                showscale=True,
+                colorbar=dict(
+                    title="Processing<br>(min)"
+                ),
+                opacity=0.8,
+                line=dict(
+                    width=0.5,
+                    color="white"
+                ),
+                symbol=active_first["symbol"],
+            ),
+
+            customdata=np.stack(
+                [
+                    active_first["order_id"],
+                    active_first["day_of_week"].astype(str),
+                    active_first["createdTime"].astype(str),
+                    active_first["orderType.label"].astype(str),
+                    active_first["num_items"].fillna(0),
+                    active_first["num_modifiers"].fillna(0),
+                    active_first["order_volume"].fillna(0),
+                    active_first["employee_count"].fillna(0),
+                    active_first["processing_time_min"].fillna(0),
+                ],
+                axis=-1
+            ),
+
+            hovertemplate=(
+                "<b>Order %{customdata[0]}</b><br>"
+                "Day: %{customdata[1]}<br>"
+                "Created: %{customdata[2]}<br>"
+                "Order Type: %{customdata[3]}<br>"
+                "Items: %{customdata[4]}<br>"
+                "Modifiers: %{customdata[5]}<br>"
+                "Order Volume: %{customdata[6]}<br>"
+                "Employees: %{customdata[7]}<br>"
+                "Processing Time: %{customdata[8]:.1f} min"
+                "<extra></extra>"
+            ),
+
+            name="Orders",
+        )
+    )
+
+    # --------------------------------------------------------------------------
+    # CREATE ANIMATION FRAMES
+    # --------------------------------------------------------------------------
+
+    frames = []
+
+    for current_time in animation_times:
+
+        # Orders currently being processed
+        active = anim_df[
+            (anim_df["createdTime"] <= current_time)
+            & (anim_df["modifiedTime"] >= current_time)
+        ].copy()
+
+        if active.empty:
+
+            frames.append(
+                go.Frame(
+                    name=str(current_time),
+                    data=[
+                        go.Scatter(
+                            x=[],
+                            y=[],
+                            mode="markers",
+                        )
+                    ],
+                )
+            )
+
+            continue
+
+        # Calculate movement from Received -> Completed
+        active["stage_position"] = calculate_stage_position(
+            active,
+            current_time
+        )
+
+        customdata = np.stack(
+            [
+                active["order_id"],
+                active["day_of_week"].astype(str),
+                active["createdTime"].astype(str),
+                active["orderType.label"].astype(str),
+                active["num_items"].fillna(0),
+                active["num_modifiers"].fillna(0),
+                active["order_volume"].fillna(0),
+                active["employee_count"].fillna(0),
+                active["processing_time_min"].fillna(0),
+            ],
+            axis=-1
+        )
+
+        frames.append(
+            go.Frame(
+                name=str(current_time),
+
+                data=[
+                    go.Scatter(
+                        x=active["stage_position"],
+                        y=active["processing_time_min"],
+                        mode="markers",
+
+                        marker=dict(
+                            size=np.maximum(
+                                active["num_items"].fillna(1) * 6,
+                                8
+                            ),
+                            color=active["processing_time_min"],
+                            colorscale="Viridis",
+                            showscale=True,
+                            opacity=0.8,
+                            line=dict(
+                                width=0.5,
+                                color="white"
+                            ),
+                            symbol=active["symbol"],
+                        ),
+
+                        customdata=customdata,
+
+                        hovertemplate=(
+                            "<b>Order %{customdata[0]}</b><br>"
+                            "Day: %{customdata[1]}<br>"
+                            "Created: %{customdata[2]}<br>"
+                            "Order Type: %{customdata[3]}<br>"
+                            "Items: %{customdata[4]}<br>"
+                            "Modifiers: %{customdata[5]}<br>"
+                            "Order Volume: %{customdata[6]}<br>"
+                            "Employees: %{customdata[7]}<br>"
+                            "Processing Time: %{customdata[8]:.1f} min"
+                            "<extra></extra>"
+                        ),
+                    )
+                ],
+            )
+        )
+
+    fig_flow.frames = frames
+
+    # --------------------------------------------------------------------------
+    # X-AXIS = PROCESSING STAGE
+    # --------------------------------------------------------------------------
+
+    fig_flow.update_xaxes(
+        range=[-0.15, 2.15],
+        tickmode="array",
+        tickvals=[0, 1, 2],
+        ticktext=[
+            "📥 Received",
+            "⚙️ In Process",
+            "✅ Completed",
+        ],
+        title="Order Processing Stage",
+        fixedrange=True,
+    )
+
+    # --------------------------------------------------------------------------
+    # Y-AXIS = PROCESSING TIME
+    # --------------------------------------------------------------------------
+
+    y_max = max(
+        10,
+        float(anim_df["processing_time_min"].quantile(0.98))
+    )
+
+    fig_flow.update_yaxes(
+        range=[0, y_max],
+        title="Processing Time (minutes)",
+        fixedrange=True,
+    )
+
+    # --------------------------------------------------------------------------
+    # PLAY / PAUSE BUTTONS
+    # --------------------------------------------------------------------------
+
+    fig_flow.update_layout(
+
+        height=600,
+
+        title=dict(
+            text=(
+                f"<b>Restaurant Order Flow</b>"
+                f"<br><sup>Time: {first_time.strftime('%I:%M %p')}</sup>"
+            ),
+            x=0.5,
+        ),
+
+        hovermode="closest",
+
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="left",
+                x=0.05,
+                y=1.12,
+
+                buttons=[
+
+                    dict(
+                        label="▶ Play",
+                        method="animate",
+                        args=[
+                            None,
+                            {
+                                "frame": {
+                                    "duration": 250,
+                                    "redraw": False,
+                                },
+                                "transition": {
+                                    "duration": 150,
+                                },
+                                "fromcurrent": True,
+                            },
+                        ],
+                    ),
+
+                    dict(
+                        label="⏸ Pause",
+                        method="animate",
+                        args=[
+                            [None],
+                            {
+                                "frame": {
+                                    "duration": 0,
+                                    "redraw": False,
+                                },
+                                "mode": "immediate",
+                            },
+                        ],
+                    ),
+                ],
+            )
+        ],
+    )
+
+    # --------------------------------------------------------------------------
+    # TIME SLIDER
+    # --------------------------------------------------------------------------
+
+    slider_steps = []
+
+    for current_time in animation_times:
+
+        slider_steps.append(
+            dict(
+                args=[
+                    [str(current_time)],
+                    {
+                        "frame": {
+                            "duration": 0,
+                            "redraw": False,
+                        },
+                        "mode": "immediate",
+                    },
+                ],
+
+                label=current_time.strftime("%I:%M %p"),
+
+                method="animate",
+            )
+        )
+
+    fig_flow.update_layout(
+
+        sliders=[
+            dict(
+                active=0,
+                currentvalue=dict(
+                    prefix="Restaurant Time: ",
+                    font=dict(size=16),
+                ),
+                pad=dict(t=30),
+                steps=slider_steps,
+            )
+        ]
+
+    )
+
+    # --------------------------------------------------------------------------
+    # DISPLAY
+    # --------------------------------------------------------------------------
+
+    st.plotly_chart(
+        fig_flow,
+        use_container_width=True
+    )
+
+    # --------------------------------------------------------------------------
+    # EXPLANATION
+    # --------------------------------------------------------------------------
+
+    st.markdown(
+        """
+        **How to read the animation:**
+
+        - **Each dot = one order**
+        - **Left → right = order progressing from Received to Completed**
+        - **Higher position = longer total processing time**
+        - **Larger dot = more items in the order**
+        - **Color = processing time**
+        - **Shape = order type**
+        - Hover over a dot to see all seven operational drivers
+        """
+    )
 # ------------------------------------------------------------------------------
 # TAB 2: PAIRWISE RELATIONSHIPS & HEATMAP
 # ------------------------------------------------------------------------------
